@@ -1,0 +1,188 @@
+/** * GLOBAL CONSTANTS 
+ */
+const SOURCE_SHEET = "WIP";
+const LOG_SHEET = "Time log";
+const SUMMARY_SHEET = "Daily Summary";
+const STATUS_COL = 9; // Column I
+
+/**
+ * 1. REAL-TIME UPDATES (onEdit)
+ */
+function onEdit(e) {
+  const ss = e.source;
+  const sheet = ss.getActiveSheet();
+  const range = e.range;
+
+  if (sheet.getName() === SOURCE_SHEET && range.getColumn() === STATUS_COL) {
+    const row = range.getRow();
+    if (row < 2) return;
+
+    // --- WORKFLOW ENFORCEMENT ---
+    const order = ["SPK", "LAS", "DEMPUL", "EPOXY", "CAT", "POLES", "FINISHING", "SELESAI", "PENYERAHAN"];
+    const newValue = String(e.value || "").trim().toUpperCase();
+    const oldValue = String(e.oldValue || "").trim().toUpperCase();
+
+    // Check logic if there's a transition between two valid statuses
+    if (e.oldValue && e.value) {
+      const oldIndex = order.indexOf(oldValue);
+      const newIndex = order.indexOf(newValue);
+
+      if (oldIndex !== -1 && newIndex !== -1) {
+        let needsWarning = false;
+        let warningMsg = "";
+
+        // Check for Skip Forward
+        if (newIndex > oldIndex + 1) {
+          needsWarning = true;
+          warningMsg = 'You are skipping steps. Are you sure you want to jump from ' + oldValue + ' to ' + newValue + '?';
+        } 
+        // Check for Going Backward
+        else if (newIndex < oldIndex) {
+          needsWarning = true;
+          warningMsg = 'You are moving BACKWARD. Are you sure you want to change from ' + oldValue + ' to ' + newValue + '?';
+        }
+
+        if (needsWarning) {
+          const ui = SpreadsheetApp.getUi();
+          const response = ui.alert('Workflow Warning', warningMsg, ui.ButtonSet.YES_NO);
+
+          if (response == ui.Button.NO) {
+            range.setValue(e.oldValue); // Revert to old status
+            return; // Stop the script here
+          }
+        }
+      }
+    }
+    // --- END WORKFLOW ENFORCEMENT ---
+
+    const now = new Date();
+    const tz = ss.getSpreadsheetTimeZone();
+    const dateStamp = Utilities.formatDate(now, tz, "yyyy-MM-dd");
+    const timeStamp = Utilities.formatDate(now, tz, "HH:mm:ss");
+
+    const rowValues = sheet.getRange(row, 1, 1, 12).getValues()[0];
+    const newStatus = newValue;
+    const oldStatus = oldValue;
+
+    // Safety check: don't log if value is cleared or hasn't changed
+    if (!e.value || newStatus === oldStatus) return;
+
+    // --- LOGGING ---
+    const logSheet = ss.getSheetByName(LOG_SHEET);
+    if (logSheet) {
+      logSheet.appendRow([
+        rowValues[0], rowValues[1], rowValues[2], rowValues[3], 
+        rowValues[4], rowValues[5], rowValues[6], rowValues[7], 
+        e.value, rowValues[9], rowValues[10], rowValues[11], 
+        dateStamp, timeStamp
+      ]);
+    }
+
+    // --- UPDATE MASUK & KELUAR ---
+    updateSummaryCounts(ss, oldStatus, newStatus);
+
+    // --- CUSTOM WORKFLOW SORT ---
+    // This forces the sheet to sort by your list order, not the alphabet
+    SpreadsheetApp.flush();
+    const lastRowWip = sheet.getLastRow();
+    if (lastRowWip > 1) {
+      const fullRange = sheet.getRange(2, 1, lastRowWip - 1, 12);
+      const values = fullRange.getValues();
+
+      values.sort((a, b) => {
+        const valA = String(a[8]).trim().toUpperCase(); // Status in Column I
+        const valB = String(b[8]).trim().toUpperCase(); 
+        
+        const indexA = order.indexOf(valA);
+        const indexB = order.indexOf(valB);
+        
+        // If status is found in our order list, use its position (0-8)
+        // If not found (e.g. empty), put it at the end (99)
+        const posA = indexA === -1 ? 99 : indexA;
+        const posB = indexB === -1 ? 99 : indexB;
+
+        if (posA !== posB) {
+          return posA - posB;
+        }
+        // If status is the same, sort by Column A (ID/Name) alphabetically
+        return String(a[0]).localeCompare(String(b[0]));
+      });
+
+      fullRange.setValues(values);
+    }
+  }
+}
+
+/**
+ * Helper to adjust Masuk/Keluar and trigger calculation
+ */
+function updateSummaryCounts(ss, oldStatus, newStatus) {
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  if (!summarySheet) return;
+
+  const lastRow = summarySheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const data = summarySheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  
+  for (let i = 0; i < data.length; i++) {
+    let statusName = String(data[i][0]).trim().toUpperCase();
+    let rowIdx = i + 2;
+
+    if (oldStatus && statusName === oldStatus) {
+      let cellKeluar = summarySheet.getRange(rowIdx, 4); // Col D
+      cellKeluar.setValue((Number(cellKeluar.getValue()) || 0) + 1);
+    }
+
+    if (statusName === newStatus) {
+      if (newStatus === "PENYERAHAN") {
+        let cellKeluarFinal = summarySheet.getRange(rowIdx, 4); 
+        cellKeluarFinal.setValue((Number(cellKeluarFinal.getValue()) || 0) + 1);
+      } else {
+        let cellMasuk = summarySheet.getRange(rowIdx, 3); // Col C
+        cellMasuk.setValue((Number(cellMasuk.getValue()) || 0) + 1);
+      }
+    }
+  }
+  calculateClosing(summarySheet);
+}
+
+/**
+ * 2. CLOSING CALCULATION
+ */
+function calculateClosing(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const range = sheet.getRange(2, 2, lastRow - 1, 3);
+  const values = range.getValues();
+  const results = values.map(row => {
+    const awal = Number(row[0]) || 0;
+    const masuk = Number(row[1]) || 0;
+    const keluar = Number(row[2]) || 0;
+    return [awal + masuk - keluar];
+  });
+  sheet.getRange(2, 5, results.length, 1).setValues(results);
+}
+
+/**
+ * 3. DAILY RESET
+ */
+function dailyRollover() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  if (!summarySheet) return;
+  const lastRow = summarySheet.getLastRow();
+  if (lastRow < 2) return;
+  const currentData = summarySheet.getRange(2, 5, lastRow - 1, 1).getValues();
+  const resetData = currentData.map(row => [Number(row[0]) || 0, 0, 0, 0]);
+  summarySheet.getRange(2, 2, resetData.length, 4).setValues(resetData);
+}
+
+/**
+ * 4. SNAPSHOT TRIGGER
+ */
+function performDailySnapshot() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  calculateClosing(summarySheet);
+}
