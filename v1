@@ -1,0 +1,91 @@
+function onEdit(e) {
+  const ss = e.source;
+  const sheet = ss.getActiveSheet();
+  const range = e.range;
+  
+  const SOURCE_SHEET = "WIP";
+  const LOG_SHEET = "Time log";
+  const SUMMARY_SHEET = "Daily Summary"; 
+  const STATUS_COL = 9; // Kolom I
+
+  if (sheet.getName() === SOURCE_SHEET && range.getColumn() === STATUS_COL) {
+    const row = range.getRow();
+    if (row < 2) return; 
+
+    const now = new Date();
+    const tz = ss.getSpreadsheetTimeZone();
+    const dateStamp = Utilities.formatDate(now, tz, "yyyy-MM-dd");
+    const timeStamp = Utilities.formatDate(now, tz, "HH:mm:ss");
+
+    // Mengambil data baris dari Kolom A sampai L (12 kolom)
+    const rowValues = sheet.getRange(row, 1, 1, 12).getValues()[0];
+    
+    const newStatus = String(e.value || "").trim().toUpperCase();
+    const oldStatus = String(e.oldValue || "").trim().toUpperCase();
+
+    // Jika sel dikosongkan atau status tidak berubah, berhenti
+    if (!e.value || newStatus === oldStatus) return;
+
+    // --- 1. MENCATAT LOG (Mapping 12 Kolom + Date + Time) ---
+    const logSheet = ss.getSheetByName(LOG_SHEET);
+    if (logSheet) {
+      logSheet.appendRow([
+        rowValues[0],  // Tgl Masuk Bengkel
+        rowValues[1],  // Tgl Acc
+        rowValues[2],  // WO
+        rowValues[3],  // No. Polisi
+        rowValues[4],  // Jenis Mobil
+        rowValues[5],  // Asuransi
+        rowValues[6],  // SA
+        rowValues[7],  // Customer
+        e.value,       // Status (Menggunakan nilai baru dari edit)
+        rowValues[9],  // Jumlah Panel
+        rowValues[10], // Jumlah Part
+        rowValues[11], // Sisa Part Belum Ada
+        dateStamp,     // Update Date
+        timeStamp      // Update Time
+      ]);
+    }
+
+    // --- 2. UPDATE MASUK & KELUAR (Daily Summary) ---
+    const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+    if (summarySheet) {
+      const lastRowSum = summarySheet.getLastRow();
+      if (lastRowSum > 1) {
+        const summaryData = summarySheet.getRange(2, 1, lastRowSum - 1, 1).getValues();
+        
+        for (let i = 0; i < summaryData.length; i++) {
+          let statusName = String(summaryData[i][0]).trim().toUpperCase();
+          
+          // Keluar dari Status Lama
+          if (oldStatus && statusName === oldStatus) {
+            let cellKeluar = summarySheet.getRange(i + 2, 4); // Kolom D
+            cellKeluar.setValue((Number(cellKeluar.getValue()) || 0) + 1);
+          }
+          
+          // Masuk ke Status Baru
+          if (statusName === newStatus) {
+            // LOGIKA KHUSUS PENYERAHAN: Langsung ke Keluar, jangan ke Masuk
+            if (newStatus === "PENYERAHAN") {
+              let cellKeluarFinal = summarySheet.getRange(i + 2, 4); // Kolom D
+              cellKeluarFinal.setValue((Number(cellKeluarFinal.getValue()) || 0) + 1);
+            } else {
+              let cellMasuk = summarySheet.getRange(i + 2, 3); // Kolom C
+              cellMasuk.setValue((Number(cellMasuk.getValue()) || 0) + 1);
+            }
+          }
+        }
+      }
+    }
+
+    // --- 3. SORTIR WIP ---
+    SpreadsheetApp.flush();
+    const lastRowWip = sheet.getLastRow();
+    if (lastRowWip > 1) {
+      sheet.getRange(2, 1, lastRowWip - 1, 12).sort([
+        {column: 9, ascending: true}, 
+        {column: 1, ascending: true}
+      ]);
+    }
+  }
+}
