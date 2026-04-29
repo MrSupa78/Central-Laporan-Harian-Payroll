@@ -1,0 +1,183 @@
+/** * GLOBAL CONSTANTS 
+ */
+const SOURCE_SHEET = "WIP";
+const LOG_SHEET = "Time log";
+const SUMMARY_SHEET = "Daily Summary";
+const PAYOUT_SHEET = "Weekly Payout"; 
+const STATUS_COL = 9; // Column I
+const DONE_COL = 13;  // Column M (Tgl Penyerahan)
+
+/**
+ * 1. REAL-TIME UPDATES (onEdit)
+ */
+function onEdit(e) {
+  const ss = e.source;
+  const sheet = ss.getActiveSheet();
+  const range = e.range;
+
+  if (sheet.getName() !== SOURCE_SHEET || range.getColumn() !== STATUS_COL) return;
+
+  const row = range.getRow();
+  if (row < 2) return;
+
+  const newValue = String(e.value || "").trim().toUpperCase();
+  const oldValue = String(e.oldValue || "").trim().toUpperCase();
+  
+  if (!e.value || newValue === oldValue) return;
+
+  // --- WORKFLOW ENFORCEMENT ---
+  const order = ["BELUM SPK", "LAS", "DEMPUL", "EPOXY", "CAT", "POLES", "FINISHING", "SELESAI", "PENYERAHAN"];
+  const oldIdx = order.indexOf(oldValue);
+  const newIdx = order.indexOf(newValue);
+
+  // If the Status is in our list, check if it's jumping more than 1 step
+  if (oldIdx !== -1 && newIdx !== -1) {
+    if (newIdx > oldIdx + 1) {
+      const response = Browser.msgBox("Workflow Alert", "You are skipping a step. Are you sure you want to move from " + oldValue + " to " + newValue + "?", Browser.Buttons.YES_NO);
+      if (response === "no") {
+        range.setValue(e.oldValue); // Reset to old value
+        return;
+      }
+    }
+  }
+
+  const now = new Date();
+  const tz = ss.getSpreadsheetTimeZone();
+  const dateStamp = Utilities.formatDate(now, tz, "yyyy-MM-dd");
+  const timeStamp = Utilities.formatDate(now, tz, "HH:mm:ss");
+
+  // Fetch WIP row data (Col A through M)
+  const rowValues = sheet.getRange(row, 1, 1, 13).getValues()[0];
+
+  // --- A. PENYERAHAN LOGIC ---
+  if (newValue === "PENYERAHAN") {
+    sheet.getRange(row, DONE_COL).setValue(dateStamp); 
+
+    const payoutSheet = ss.getSheetByName(PAYOUT_SHEET);
+    if (payoutSheet) {
+      payoutSheet.appendRow([
+        dateStamp,    
+        rowValues[2], 
+        rowValues[3], 
+        rowValues[4], 
+        rowValues[5], 
+        rowValues[9]  
+      ]);
+      ss.toast("Data added to Weekly Payout", "Success ✅");
+    }
+  }
+
+  // --- B. LOGGING ---
+  const logSheet = ss.getSheetByName(LOG_SHEET);
+  if (logSheet) {
+    logSheet.appendRow([
+      rowValues[0], rowValues[1], rowValues[2], rowValues[3], 
+      rowValues[4], rowValues[5], rowValues[6], rowValues[7], 
+      e.value, rowValues[9], rowValues[10], rowValues[11], 
+      dateStamp, timeStamp
+    ]);
+  }
+
+  // --- C. UPDATE DAILY SUMMARY ---
+  updateSummaryCounts(ss, oldValue, newValue);
+
+  // --- D. CUSTOM SORT WIP ---
+  // We use the 'order' array defined above to sort numerically
+  SpreadsheetApp.flush();
+  const lastRowWip = sheet.getLastRow();
+  if (lastRowWip > 1) {
+    const fullRange = sheet.getRange(2, 1, lastRowWip - 1, 13);
+    const data = fullRange.getValues();
+    
+    // Custom sort logic
+    data.sort((a, b) => {
+      const statusA = String(a[STATUS_COL - 1]).trim().toUpperCase();
+      const statusB = String(b[STATUS_COL - 1]).trim().toUpperCase();
+      
+      const posA = order.indexOf(statusA) === -1 ? 99 : order.indexOf(statusA);
+      const posB = order.indexOf(statusB) === -1 ? 99 : order.indexOf(statusB);
+      
+      if (posA !== posB) {
+        return posA - posB; // Primary sort: Custom Status Order
+      }
+      return new Date(a[0]) - new Date(b[0]); // Secondary sort: Tgl Masuk (Col A)
+    });
+    
+    fullRange.setValues(data);
+  }
+}
+
+/**
+ * Helper: Updates Masuk/Keluar and triggers calculation
+ */
+function updateSummaryCounts(ss, oldStatus, newStatus) {
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  if (!summarySheet) return;
+  const lastRow = summarySheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const data = summarySheet.getRange(2, 1, lastRow - 1, 1).getValues();
+  for (let i = 0; i < data.length; i++) {
+    let statusName = String(data[i][0]).trim().toUpperCase();
+    let rowIdx = i + 2;
+    
+    if (oldStatus && statusName === oldStatus) {
+      let cellKeluar = summarySheet.getRange(rowIdx, 4); // Column D
+      cellKeluar.setValue((Number(cellKeluar.getValue()) || 0) + 1);
+    }
+    if (statusName === newStatus) {
+      if (newStatus === "PENYERAHAN") {
+        let cellKeluarFinal = summarySheet.getRange(rowIdx, 4); 
+        cellKeluarFinal.setValue((Number(cellKeluarFinal.getValue()) || 0) + 1);
+      } else {
+        let cellMasuk = summarySheet.getRange(rowIdx, 3); // Column C
+        cellMasuk.setValue((Number(cellMasuk.getValue()) || 0) + 1);
+      }
+    }
+  }
+  calculateClosing(summarySheet);
+}
+
+function calculateClosing(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const range = sheet.getRange(2, 2, lastRow - 1, 3);
+  const values = range.getValues();
+  const results = values.map(row => [(Number(row[0]) || 0) + (Number(row[1]) || 0) - (Number(row[2]) || 0)]);
+  sheet.getRange(2, 5, results.length, 1).setValues(results);
+}
+
+/**
+ * 2. DAILY RESET (12 AM)
+ */
+function dailyRollover() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  if (!summarySheet) return;
+  const lastRow = summarySheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const currentClosing = summarySheet.getRange(2, 5, lastRow - 1, 1).getValues();
+  const resetData = currentClosing.map(row => [Number(row[0]) || 0, 0, 0, 0]); 
+  summarySheet.getRange(2, 2, resetData.length, 4).setValues(resetData);
+}
+
+/**
+ * 3. SNAPSHOT (4 PM / Sat 2 PM)
+ */
+function performDailySnapshot() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  if (summarySheet) calculateClosing(summarySheet);
+}
+
+/**
+ * 4. WEEKLY PAYOUT RESET (Monday)
+ */
+function weeklyPayoutReset() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const payoutSheet = ss.getSheetByName(PAYOUT_SHEET);
+  if (payoutSheet && payoutSheet.getLastRow() > 1) {
+    payoutSheet.getRange(2, 1, payoutSheet.getLastRow() - 1, payoutSheet.getLastColumn()).clearContent();
+  }
+}
