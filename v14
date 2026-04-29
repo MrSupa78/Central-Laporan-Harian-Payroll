@@ -1,0 +1,214 @@
+/** * GLOBAL CONSTANTS 
+ */
+const SOURCE_SHEET = "WIP";
+const LOG_SHEET = "Time log";
+const SUMMARY_SHEET = "Daily Summary";
+const PAYOUT_SHEET = "Weekly Payout"; 
+const STATUS_COL = 9;    // Column I
+const DURATION_COL = 13; // Column M (Durasi Pengerjaan)
+const DONE_COL = 14;     // Column N (Tgl Penyerahan)
+
+// Centralized Workflow Order (Used for Sorting and Counter Direction)
+const WORKFLOW_ORDER = ["BELUM SPK", "LAS", "DEMPUL", "EPOXY", "CAT", "POLES", "FINISHING", "SELESAI", "PENYERAHAN"];
+
+/**
+ * 1. REAL-TIME UPDATES (onEdit)
+ */
+function onEdit(e) {
+  const ss = e.source;
+  const sheet = ss.getActiveSheet();
+  const range = e.range;
+
+  if (sheet.getName() !== SOURCE_SHEET || range.getColumn() !== STATUS_COL) return;
+
+  const row = range.getRow();
+  if (row < 2) return;
+
+  const newValue = String(e.value || "").trim().toUpperCase();
+  const oldValue = String(e.oldValue || "").trim().toUpperCase();
+  
+  if (!e.value || newValue === oldValue) return;
+
+  // --- WORKFLOW ENFORCEMENT ---
+  const oldIdx = WORKFLOW_ORDER.indexOf(oldValue);
+  const newIdx = WORKFLOW_ORDER.indexOf(newValue);
+
+  if (oldIdx !== -1 && newIdx !== -1) {
+    if (newIdx > oldIdx + 1) {
+      const response = Browser.msgBox("Workflow Alert", "You are skipping a step. Are you sure you want to move from " + oldValue + " to " + newValue + "?", Browser.Buttons.YES_NO);
+      if (response === "no") {
+        range.setValue(e.oldValue); 
+        return;
+      }
+    }
+  }
+
+  const now = new Date();
+  const tz = ss.getSpreadsheetTimeZone();
+  const dateStamp = Utilities.formatDate(now, tz, "yyyy-MM-dd");
+  const timeStamp = Utilities.formatDate(now, tz, "HH:mm:ss");
+
+  const rowValues = sheet.getRange(row, 1, 1, 14).getValues()[0];
+  const tglMasuk = new Date(rowValues[0]);
+
+  // --- CALCULATION: DURASI PENGERJAAN ---
+  let durationDisplay = "0 Hari";
+  if (tglMasuk instanceof Date && !isNaN(tglMasuk)) {
+    const diffTime = Math.abs(now - tglMasuk);
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    durationDisplay = diffDays + " Hari";
+  }
+
+  const fullRowRange = sheet.getRange(row, 1, 1, 14);
+
+  if (newValue === "PENYERAHAN") {
+    sheet.getRange(row, DONE_COL).setValue(dateStamp); 
+    sheet.getRange(row, DURATION_COL).setValue(durationDisplay);
+    fullRowRange.setBackground("#eeeeee").setFontColor("#999999");
+
+    const payoutSheet = ss.getSheetByName(PAYOUT_SHEET);
+    if (payoutSheet) {
+      payoutSheet.appendRow([dateStamp, rowValues[2], rowValues[3], rowValues[4], rowValues[5], rowValues[9]]);
+      ss.toast("Data added to Weekly Payout", "Success ✅");
+    }
+  } else {
+    sheet.getRange(row, DURATION_COL).setValue(durationDisplay);
+    fullRowRange.setBackground(null).setFontColor(null);
+    sheet.getRange(row, DONE_COL).clearContent();
+  }
+
+  // --- B. LOGGING ---
+  const logSheet = ss.getSheetByName(LOG_SHEET);
+  if (logSheet) {
+    logSheet.appendRow([
+      rowValues[0], rowValues[1], rowValues[2], rowValues[3], 
+      rowValues[4], rowValues[5], rowValues[6], rowValues[7], 
+      e.value, rowValues[9], rowValues[10], rowValues[11], 
+      dateStamp, timeStamp
+    ]);
+  }
+
+  // --- C. UPDATE DAILY SUMMARY (With Toggle Correction) ---
+  updateSummaryCounts(ss, oldValue, newValue);
+
+  // --- D. CUSTOM SORT WIP ---
+  SpreadsheetApp.flush(); 
+  const lastRowWip = sheet.getLastRow();
+  if (lastRowWip > 1) {
+    const fullRange = sheet.getRange(2, 1, lastRowWip - 1, 14);
+    const data = fullRange.getValues();
+    const backgrounds = fullRange.getBackgrounds();
+    const fontColors = fullRange.getFontColors();
+
+    const combined = data.map((rowArr, i) => {
+      return { data: rowArr, bg: backgrounds[i], fc: fontColors[i] };
+    });
+
+    combined.sort((a, b) => {
+      const statusA = String(a.data[STATUS_COL - 1]).trim().toUpperCase();
+      const statusB = String(b.data[STATUS_COL - 1]).trim().toUpperCase();
+      const posA = WORKFLOW_ORDER.indexOf(statusA) === -1 ? 99 : WORKFLOW_ORDER.indexOf(statusA);
+      const posB = WORKFLOW_ORDER.indexOf(statusB) === -1 ? 99 : WORKFLOW_ORDER.indexOf(statusB);
+      if (posA !== posB) return posA - posB;
+      return new Date(a.data[0]) - new Date(b.data[0]); 
+    });
+
+    fullRange.setValues(combined.map(item => item.data));
+    fullRange.setBackgrounds(combined.map(item => item.bg));
+    fullRange.setFontColors(combined.map(item => item.fc));
+  }
+}
+
+/**
+ * Helper: Updates Masuk/Keluar with Directional Logic
+ */
+function updateSummaryCounts(ss, oldStatus, newStatus) {
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  if (!summarySheet) return;
+
+  const oldIdx = WORKFLOW_ORDER.indexOf(oldStatus);
+  const newIdx = WORKFLOW_ORDER.indexOf(newStatus);
+
+  const lastRow = summarySheet.getLastRow();
+  if (lastRow < 2) return;
+  const statusData = summarySheet.getRange(2, 1, lastRow - 1, 1).getValues();
+
+  // Determine direction: Forward move = +1, Backward move = -1
+  // If moving from empty/unknown to a status, we treat it as Forward.
+  const isForward = (oldIdx === -1) || (newIdx > oldIdx);
+  const adj = isForward ? 1 : -1;
+
+  for (let i = 0; i < statusData.length; i++) {
+    let statusName = String(statusData[i][0]).trim().toUpperCase();
+    let rowIdx = i + 2;
+
+    if (isForward) {
+      // FORWARD LOGIC: old status exits (+1 Keluar), new status enters (+1 Masuk)
+      if (oldStatus && statusName === oldStatus) {
+        let cell = summarySheet.getRange(rowIdx, 4); // Column D (Keluar)
+        cell.setValue((Number(cell.getValue()) || 0) + adj);
+      }
+      if (newStatus && statusName === newStatus) {
+        let col = (newStatus === "PENYERAHAN") ? 4 : 3; // Penyerahan exits via Keluar
+        let cell = summarySheet.getRange(rowIdx, col);
+        cell.setValue((Number(cell.getValue()) || 0) + adj);
+      }
+    } else {
+      // BACKWARD LOGIC: Undo entry of old status (-1 Masuk), Undo exit of new status (-1 Keluar)
+      if (oldStatus && statusName === oldStatus) {
+        let col = (oldStatus === "PENYERAHAN") ? 4 : 3;
+        let cell = summarySheet.getRange(rowIdx, col);
+        cell.setValue((Number(cell.getValue()) || 0) + adj); // adj is -1
+      }
+      if (newStatus && statusName === newStatus) {
+        let cell = summarySheet.getRange(rowIdx, 4); // Column D (Keluar)
+        cell.setValue((Number(cell.getValue()) || 0) + adj); // adj is -1
+      }
+    }
+  }
+  calculateClosing(summarySheet);
+}
+
+function calculateClosing(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const range = sheet.getRange(2, 2, lastRow - 1, 3);
+  const values = range.getValues();
+  const results = values.map(row => [(Number(row[0]) || 0) + (Number(row[1]) || 0) - (Number(row[2]) || 0)]);
+  sheet.getRange(2, 5, results.length, 1).setValues(results);
+}
+
+/**
+ * 2. DAILY RESET (12 AM)
+ */
+function dailyRollover() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  if (!summarySheet) return;
+  const lastRow = summarySheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const currentClosing = summarySheet.getRange(2, 5, lastRow - 1, 1).getValues();
+  const resetData = currentClosing.map(row => [Number(row[0]) || 0, 0, 0, 0]); 
+  summarySheet.getRange(2, 2, resetData.length, 4).setValues(resetData);
+}
+
+/**
+ * 3. SNAPSHOT (4 PM / Sat 2 PM)
+ */
+function performDailySnapshot() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
+  if (summarySheet) calculateClosing(summarySheet);
+}
+
+/**
+ * 4. WEEKLY PAYOUT RESET (Monday)
+ */
+function weeklyPayoutReset() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const payoutSheet = ss.getSheetByName(PAYOUT_SHEET);
+  if (payoutSheet && payoutSheet.getLastRow() > 1) {
+    payoutSheet.getRange(2, 1, payoutSheet.getLastRow() - 1, payoutSheet.getLastColumn()).clearContent();
+  }
+}
