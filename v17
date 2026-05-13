@@ -198,15 +198,16 @@ function calculateClosing(sheet) {
   sheet.getRange(2, 5, results.length, 1).setValues(results);
 }
 
+/**
+ * Executes the daily rollover logic.
+ * Added logic to skip execution if today is Sunday.
+ */
 function dailyRollover() {
   const now = new Date();
-  const day = now.getDay(); // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-  const hour = now.getHours();
-
-  // Guard: If it is Monday (1) between 00:00 and 01:00, stop the execution.
-  // Note: 'Sunday Midnight' is technically the start of Monday.
-  if (day === 1 && hour === 0) {
-    console.log("Rollover skipped: Sunday Midnight to 1AM window.");
+  
+  // getDay() returns 0 for Sunday, 1 for Monday, etc.
+  if (now.getDay() === 0) {
+    console.log("Rollover skipped: Today is Sunday.");
     return; 
   }
 
@@ -217,25 +218,14 @@ function dailyRollover() {
   const lastRow = summarySheet.getLastRow();
   if (lastRow < 2) return;
 
+  // Perform a final snapshot before resetting columns
+  calculateClosing(summarySheet);
+
   const currentClosing = summarySheet.getRange(2, 5, lastRow - 1, 1).getValues();
   
-  // Closing becomes the next day's Opening, reset Masuk/Keluar/Summary
+  // Map Closing to Opening (Col B), and reset Masuk, Keluar, and current Closing to 0
   const resetData = currentClosing.map(row => [Number(row[0]) || 0, 0, 0, 0]); 
   summarySheet.getRange(2, 2, resetData.length, 4).setValues(resetData);
   
   console.log("Daily rollover completed successfully.");
-}
-
-function performDailySnapshot() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const summarySheet = ss.getSheetByName(SUMMARY_SHEET);
-  if (summarySheet) calculateClosing(summarySheet);
-}
-
-function weeklyPayoutReset() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const payoutSheet = ss.getSheetByName(PAYOUT_SHEET);
-  if (payoutSheet && payoutSheet.getLastRow() > 1) {
-    payoutSheet.getRange(2, 1, payoutSheet.getLastRow() - 1, payoutSheet.getLastColumn()).clearContent();
-  }
 }
