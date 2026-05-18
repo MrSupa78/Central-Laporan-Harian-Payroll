@@ -230,64 +230,10 @@ function dailyRollover() {
   console.log("Daily rollover completed successfully.");
 }
 
-function syncWIPtoQC(e) {
-  // 1. SILENT CHECK: Only run if the edit happened in the "WIP" sheet
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getActiveSheet();
-  if (sheet.getName() !== "WIP") return;
-
-  var row = e.range.getRow();
-  if (row < 2) return; // Skip header
-
-  // 2. DEBOUNCE / WAIT LOGIC (5 Minutes = 300,000 milliseconds)
-  var waitTime = 5 * 60 * 1000; 
-  var now = new Date().getTime();
-  PropertiesService.getScriptProperties().setProperty('lastEdit_' + row, now);
-
-  Utilities.sleep(waitTime);
-
-  // Check if a newer edit has happened to the same row while we were sleeping
-  var lastEdit = PropertiesService.getScriptProperties().getProperty('lastEdit_' + row);
-  if (lastEdit != now) return; // Exit if user is still typing in this row
-
-  try {
-    var destinationFileId = "1S6k_nloOzdFvEupaUyENQYRp71rtx-fH6w-0jN6ZoCU"; 
-    var wipSheet = sheet;
-    
-    var qcFile = SpreadsheetApp.openById(destinationFileId);
-    var qcSheet = qcFile.getSheetByName("Quality Control");
-
-    // Get specific row data
-    var rowValues = wipSheet.getRange(row, 1, 1, 5).getValues()[0];
-    var wo = rowValues[2] ? rowValues[2].toString().trim() : "";      // Column C
-    var police = rowValues[3] ? rowValues[3].toString().trim() : "";  // Column D
-    var type = rowValues[4] ? rowValues[4].toString().trim() : "";    // Column E
-
-    // 3. REQUIREMENT CHECK: All 3 columns must be filled
-    if (wo === "" || police === "" || type === "") return;
-
-    // 4. DUPLICATE CHECK: Look at QC sheet to see if WO exists
-    var qcData = qcSheet.getRange("A:A").getValues();
-    var existingWO = qcData.map(function(r) { return r[0].toString().trim(); });
-
-    if (existingWO.indexOf(wo) === -1) {
-      // Find real last row in QC
-      var lastRow = 1;
-      for (var i = qcData.length - 1; i >= 0; i--) {
-        if (qcData[i][0] !== "") {
-          lastRow = i + 1;
-          break;
-        }
-      }
-      
-      // 5. SILENT TRANSFER
-      qcSheet.getRange(lastRow + 1, 1, 1, 9).setValues([[wo, police, type, false, false, false, false, false, false]]);
-      
-      // Cleanup the property memory
-      PropertiesService.getScriptProperties().deleteProperty('lastEdit_' + row);
-    }
-
-  } catch (err) {
-    console.log("Error: " + err.message);
+function weeklyPayoutReset() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const payoutSheet = ss.getSheetByName(PAYOUT_SHEET);
+  if (payoutSheet && payoutSheet.getLastRow() > 1) {
+    payoutSheet.getRange(2, 1, payoutSheet.getLastRow() - 1, payoutSheet.getLastColumn()).clearContent();
   }
 }
