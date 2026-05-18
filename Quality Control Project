@@ -1,0 +1,171 @@
+// ==========================================
+// CONFIGURATION: PASTE YOUR LAPORAN HARIAN SPREADSHEET ID HERE
+// ==========================================
+var SOURCE_SPREADSHEET_ID = "1Xqmc4Dp3Q1BIUJuJqQsGVXunCWP-FrH7T8I6xDxEWeo"; 
+
+/**
+ * Main function to import data from Laporan Harian "WIP" sheet
+ */
+function importWIPData() {
+  var sourceSs;
+  try {
+    sourceSs = SpreadsheetApp.openById(SOURCE_SPREADSHEET_ID);
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("Error: Unable to open 'Laporan Harian'. Please verify the Spreadsheet ID.");
+    return;
+  }
+  
+  var sourceSheet = sourceSs.getSheetByName("WIP");
+  var targetSs = SpreadsheetApp.getActiveSpreadsheet();
+  var targetSheet = targetSs.getSheetByName("Quality Control");
+  
+  if (!sourceSheet || !targetSheet) {
+    SpreadsheetApp.getUi().alert("Error: Source 'WIP' or Target 'Quality Control' sheet not found.");
+    return;
+  }
+  
+  var sourceData = sourceSheet.getDataRange().getValues();
+  if (sourceData.length <= 1) return;
+  
+  var sourceHeaders = sourceData[0];
+  var idxWo = sourceHeaders.indexOf("No. WO");
+  var idxPolisi = sourceHeaders.indexOf("No. Polisi");
+  var idxMobil = sourceHeaders.indexOf("Jenis Mobil");
+  
+  var targetData = targetSheet.getDataRange().getValues();
+  var targetHeaders = targetData[0];
+  
+  var tgtWoIdx = targetHeaders.indexOf("No. WO");
+  var tgtPolisiIdx = targetHeaders.indexOf("No. Polisi");
+  var tgtMobilIdx = targetHeaders.indexOf("Jenis Mobil");
+  
+  // Build a Set of existing 3-column identifiers to prevent duplicates
+  var existingRecords = new Set();
+  for (var i = 1; i < targetData.length; i++) {
+    var key = [targetData[i][tgtWoIdx], targetData[i][tgtPolisiIdx], targetData[i][tgtMobilIdx]].map(v => String(v).trim().toUpperCase()).join("|");
+    if (key !== "||") existingRecords.add(key);
+  }
+  
+  var newRows = [];
+  for (var j = 1; j < sourceData.length; j++) {
+    var sWo = String(sourceData[j][idxWo]).trim().toUpperCase();
+    var sPolisi = String(sourceData[j][idxPolisi]).trim().toUpperCase();
+    var sMobil = String(sourceData[j][idxMobil]).trim().toUpperCase();
+    
+    if (!sWo && !sPolisi && !sMobil) continue;
+    
+    var sKey = sWo + "|" + sPolisi + "|" + sMobil;
+    
+    if (!existingRecords.has(sKey)) {
+      var newRow = new Array(targetHeaders.length).fill("");
+      newRow[tgtWoIdx] = sourceData[j][idxWo];
+      newRow[tgtPolisiIdx] = sourceData[j][idxPolisi];
+      newRow[tgtMobilIdx] = sourceData[j][idxMobil];
+      
+      newRows.push(newRow);
+      existingRecords.add(sKey);
+    }
+  }
+  
+  if (newRows.length > 0) {
+    // Statically insert new unstarted rows at Row 2
+    targetSheet.insertRowsBefore(2, newRows.length);
+    var newRange = targetSheet.getRange(2, 1, newRows.length, targetHeaders.length);
+    newRange.setValues(newRows);
+    
+    // Reset formatting to prevent header styling bleeding into row 2
+    newRange.setFontWeight("normal").setBackground(null).setFontColor("#000000");
+    
+    // Sort all records immediately so everything places correctly
+    sortQCSheetByProgress();
+    targetSs.toast("Imported " + newRows.length + " new row(s) and sorted by progress.", "Success");
+  } else {
+    targetSs.toast("No new records found. Sheet is up to date.", "Info");
+  }
+}
+
+/**
+ * Sorts the QC Sheet dynamically based on step completion progress (D to H)
+ */
+function sortQCSheetByProgress() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Quality Control");
+  if (!sheet) return;
+  
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 2) return; // Not enough data to sort
+  
+  // Target data starting from Row 2 to the end
+  var range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
+  var data = range.getValues();
+  
+  // Javascript sorting engine
+  data.sort(function(rowA, rowB) {
+    var scoreA = getProgressScore(rowA);
+    var scoreB = getProgressScore(rowB);
+    
+    // Ascending order: Lowest score (0 = no progress) goes to the top.
+    return scoreA - scoreB;
+  });
+  
+  // Write the sorted values back down statically
+  range.setValues(data);
+}
+
+/**
+ * Helper to calculate production status weights
+ */
+function getProgressScore(row) {
+  // Column D = index 3, E = 4, F = 5, G = 6, H = 7
+  var d = String(row[3]).trim().toUpperCase();
+  var e = String(row[4]).trim().toUpperCase();
+  var f = String(row[5]).trim().toUpperCase();
+  var g = String(row[6]).trim().toUpperCase();
+  var h = String(row[7]).trim().toUpperCase();
+  
+  if (h === "LOLOS") return 5; // Bottom-most priority (Done)
+  if (g === "LOLOS") return 4;
+  if (f === "LOLOS") return 3;
+  if (e === "LOLOS") return 2;
+  if (d === "LOLOS") return 1;
+  
+  return 0; // Top-most priority (New / Haven't passed anything yet)
+}
+
+/**
+ * Trigger: Runs automatically EVERY TIME a user changes a dropdown to "LOLOS"
+ */
+function onEdit(e) {
+  var range = e.range;
+  var sheet = range.getSheet();
+  
+  // Only trigger sorting if edited sheet is "Quality Control" 
+  // and the modification happened in Columns D through H (Columns 4 to 8) above row 1
+  if (sheet.getName() === "Quality Control" && range.getRow() > 1 && range.getColumn() >= 4 && range.getColumn() <= 8) {
+    sortQCSheetByProgress();
+  }
+}
+
+/**
+ * Setup Menu tabs
+ */
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('WIP Data Sync')
+      .addItem('Sync New WIP Data Now', 'importWIPData')
+      .addItem('Force Re-Sort Rows Manual', 'sortQCSheetByProgress')
+      .addItem('Set Up Automatic Sync (Every 15 mins)', 'createTimeDrivenTrigger')
+      .addToUi();
+}
+
+/**
+ * Setup background automation trigger
+ */
+function createTimeDrivenTrigger() {
+  var allTriggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < allTriggers.length; i++) {
+    if (allTriggers[i].getHandlerFunction() === 'importWIPData') {
+      ScriptApp.deleteTrigger(allTriggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('importWIPData').timeBased().everyMinutes(15).create();
+  SpreadsheetApp.getUi().alert("Success! Automation active. Checking WIP every 15 minutes.");
+}
