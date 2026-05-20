@@ -1,0 +1,68 @@
+function syncPenyerahanData() {
+  // 1. SETTINGS - Replace the ID below with your Laporan Harian Sheet ID
+  var sourceSpreadsheetId = "1Xqmc4Dp3Q1BIUJuJqQsGVXunCWP-FrH7T8I6xDxEWeo"; 
+  
+  var ssSource = SpreadsheetApp.openById(sourceSpreadsheetId);
+  var sheetWip = ssSource.getSheetByName("WIP");
+  var ssDest = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetSurvey = ssDest.getSheetByName("Survey Deployment Schedule");
+  
+  // 2. GET SOURCE DATA (WIP)
+  var wipData = sheetWip.getDataRange().getValues();
+  var wipHeaders = wipData[0];
+  
+  // Find column indices
+  var colStatus = wipHeaders.indexOf("Status");
+  var colNama = wipHeaders.indexOf("Nama Pelanggan");
+  var colPolisi = wipHeaders.indexOf("No. Polisi");
+  var colTgl = wipHeaders.indexOf("Tgl Penyerahan");
+  var colSA = wipHeaders.indexOf("SA");
+  
+  // 3. GET EXISTING DATA (To avoid duplicates)
+  var existingData = sheetSurvey.getDataRange().getValues();
+  var existingKeys = existingData.map(function(row) {
+    return row[0] + "|" + row[1] + "|" + row[2].toString(); 
+  });
+
+  var rowsToAdd = [];
+  
+  // 4. FILTER AND PREPARE NEW ROWS
+  for (var i = 1; i < wipData.length; i++) {
+    var row = wipData[i];
+    if (row[colStatus] === "PENYERAHAN") {
+      var key = row[colNama] + "|" + row[colPolisi] + "|" + row[colTgl].toString();
+      
+      if (existingKeys.indexOf(key) === -1) {
+        rowsToAdd.push([
+          row[colNama], 
+          row[colPolisi], 
+          row[colTgl], 
+          row[colSA], 
+          "", 
+          "", 
+          ""  
+        ]);
+      }
+    }
+  }
+
+  // 5. APPEND AND SORT
+  if (rowsToAdd.length > 0) {
+    sheetSurvey.getRange(sheetSurvey.getLastRow() + 1, 1, rowsToAdd.length, 7).setValues(rowsToAdd);
+    
+    var lastRow = sheetSurvey.getLastRow();
+    if (lastRow > 1) {
+      // CHANGED: column 3 (Tgl Penyerahan), ascending: false (Latest on top)
+      sheetSurvey.getRange(2, 1, lastRow - 1, 7).sort({column: 3, ascending: false});
+    }
+    
+    Logger.log(rowsToAdd.length + " new records added.");
+  } else {
+    // Re-sort anyway even if no new rows, to keep latest on top if manual edits were made
+    var lastRow = sheetSurvey.getLastRow();
+    if (lastRow > 1) {
+       sheetSurvey.getRange(2, 1, lastRow - 1, 7).sort({column: 3, ascending: false});
+    }
+    Logger.log("No new Penyerahan records found.");
+  }
+}
